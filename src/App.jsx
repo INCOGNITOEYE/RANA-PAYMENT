@@ -7,7 +7,6 @@ import {
   doc,
   onSnapshot,
   getDoc,
-  getDocFromServer,
 } from "firebase/firestore";
 import { db, auth } from "./firebase";
 import { signInAnonymously } from "firebase/auth";
@@ -69,36 +68,17 @@ export default function App() {
       setProductLoading(true);
 
       try {
+        // Authenticate the customer BEFORE reading the product.
+        // Firestore rules currently require request.auth for products.
+        await signInAnonymously(auth);
+
         if (!productId) {
           setProduct(DEFAULT_PAYMENT);
           return;
         }
 
         const productRef = doc(db, "products", productId);
-
-        // Always read the current server value here. This prevents one browser
-        // from showing an old cached product while another browser reads the
-        // current Firestore state.
-        let productSnap;
-        let lastError;
-
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          try {
-            productSnap = await getDocFromServer(productRef);
-            break;
-          } catch (error) {
-            lastError = error;
-            if (attempt < 2) {
-              await new Promise((resolve) =>
-                window.setTimeout(resolve, 700)
-              );
-            }
-          }
-        }
-
-        if (!productSnap) {
-          throw lastError || new Error("Product could not be loaded from Firestore.");
-        }
+        const productSnap = await getDoc(productRef);
 
         if (!productSnap.exists()) {
           setProduct(null);
