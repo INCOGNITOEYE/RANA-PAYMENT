@@ -68,10 +68,6 @@ export default function App() {
       setProductLoading(true);
 
       try {
-        // Authenticate the customer BEFORE reading the product.
-        // Firestore rules currently require request.auth for products.
-        await signInAnonymously(auth);
-
         if (!productId) {
           setProduct(DEFAULT_PAYMENT);
           return;
@@ -375,7 +371,7 @@ export default function App() {
     }
   };
 
-  const openUpi = () => {
+  const openUpi = (app = "generic") => {
     if (!paymentId || !product) {
       alert(
         "Payment request তৈরি হচ্ছে। একটু পরে আবার চেষ্টা করো।"
@@ -390,6 +386,25 @@ export default function App() {
 
     setStatus("pending");
 
+    // Use the same merchant UPI data for every route.
+    // App-specific schemes are used only when the customer
+    // explicitly selects an app. The generic UPI URI remains
+    // the fallback and is also the QR payload.
+    const appSchemes = {
+      google: "gpay://upi/pay?",
+      phonepe: "phonepe://pay?",
+      paytm: "paytmmp://pay?",
+    };
+
+    const selectedScheme = appSchemes[app];
+
+    if (selectedScheme && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+      const query = upiLink.split("?")[1] || "";
+      window.location.href = selectedScheme + query;
+      return;
+    }
+
+    // BHIM and unsupported browsers use the standard UPI intent.
     window.location.href = upiLink;
   };
 
@@ -478,6 +493,21 @@ export default function App() {
     );
   }
 
+  // Standard UPI URI used by the QR code and as the fallback.
+  // A unique transaction reference helps identify this payment request.
+  const transactionRef = String(
+    paymentId || `RANA${Date.now()}`
+  ).slice(0, 35);
+
+  const merchantCode = product.merchantCode
+    ? `&mc=${encodeURIComponent(product.merchantCode)}`
+    : "";
+
+  const transactionUrl =
+    window.location.origin +
+    window.location.pathname +
+    window.location.search;
+
   const upiLink =
     `upi://pay?pa=${encodeURIComponent(
       product.upiId
@@ -485,8 +515,14 @@ export default function App() {
     `&pn=${encodeURIComponent(
       product.merchantName || "RANA PAYMENT"
     )}` +
+    `&tr=${encodeURIComponent(transactionRef)}` +
+    `&tn=${encodeURIComponent(
+      product.name || "RANA PAYMENT"
+    )}` +
     `&am=${Number(product.amount).toFixed(2)}` +
-    `&cu=INR`;
+    `&cu=INR` +
+    merchantCode +
+    `&url=${encodeURIComponent(transactionUrl)}`;
 
   if (status === "verified" && !showDownloadPage) {
     return (
@@ -1020,7 +1056,7 @@ export default function App() {
 
         <div className="upi-apps">
           <button
-            onClick={openUpi}
+            onClick={() => openUpi("google")}
             className="upi-app"
           >
             <span className="app-logo google">G</span>
@@ -1028,7 +1064,7 @@ export default function App() {
           </button>
 
           <button
-            onClick={openUpi}
+            onClick={() => openUpi("phonepe")}
             className="upi-app"
           >
             <span className="app-logo phonepe">पे</span>
@@ -1036,7 +1072,7 @@ export default function App() {
           </button>
 
           <button
-            onClick={openUpi}
+            onClick={() => openUpi("paytm")}
             className="upi-app"
           >
             <span className="app-logo paytm">P</span>
@@ -1044,7 +1080,7 @@ export default function App() {
           </button>
 
           <button
-            onClick={openUpi}
+            onClick={() => openUpi("bhim")}
             className="upi-app"
           >
             <span className="app-logo bhim">B</span>
