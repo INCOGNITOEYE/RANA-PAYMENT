@@ -19,7 +19,6 @@ import {
   Clock3,
   ArrowLeft,
   X,
-  Maximize2,
   Download,
   RefreshCw,
 } from "lucide-react";
@@ -55,13 +54,13 @@ export default function App() {
 
   const isAdmin = window.location.hash === "#admin";
 
-  /* =========================
-     LOAD PRODUCT FROM GENERATED URL
-     ========================= */
-
   const productId = new URLSearchParams(
     window.location.search
   ).get("product");
+
+  /* =========================
+     LOAD PRODUCT
+     ========================= */
 
   useEffect(() => {
     if (isAdmin) return;
@@ -70,8 +69,6 @@ export default function App() {
       setProductLoading(true);
 
       try {
-        // Authenticate the customer BEFORE reading the product.
-        // This makes generated payment links work in other browsers/devices.
         if (!auth.currentUser) {
           await signInAnonymously(auth);
         }
@@ -81,12 +78,7 @@ export default function App() {
           return;
         }
 
-        const productRef = doc(
-          db,
-          "products",
-          productId
-        );
-
+        const productRef = doc(db, "products", productId);
         const productSnap = await getDoc(productRef);
 
         if (!productSnap.exists()) {
@@ -129,7 +121,9 @@ export default function App() {
       creatingRequest.current = true;
 
       try {
-        await signInAnonymously(auth);
+        if (!auth.currentUser) {
+          await signInAnonymously(auth);
+        }
 
         const savedPaymentId =
           sessionStorage.getItem("paymentId");
@@ -137,10 +131,6 @@ export default function App() {
         const savedProductId =
           sessionStorage.getItem("paymentProductId");
 
-        /*
-         * Only restore the old request if it belongs
-         * to the exact same generated product link.
-         */
         if (
           savedPaymentId &&
           savedProductId === product.id
@@ -194,14 +184,6 @@ export default function App() {
         sessionStorage.removeItem("paymentProductId");
         sessionStorage.removeItem("paymentStarted");
 
-        /*
-         * IMPORTANT:
-         * The payment request stores the exact product
-         * amount + exact UPI ID + exact download URL.
-         *
-         * Therefore each generated link has its own
-         * payment configuration.
-         */
         const docRef = await addDoc(
           collection(db, "payments"),
           {
@@ -279,11 +261,6 @@ export default function App() {
 
         const data = snapshot.data();
 
-        /*
-         * Use the values saved in the payment request.
-         * This prevents another product's amount/UPI/URL
-         * from being used accidentally.
-         */
         if (data.status === "approved") {
           setStatus("verified");
         } else if (data.status === "rejected") {
@@ -428,16 +405,22 @@ export default function App() {
     return <Admin />;
   }
 
+  /* =========================
+     LOADING
+     ========================= */
+
   if (productLoading) {
     return (
       <main className="payment-page">
         <section className="payment-card">
           <div className="brand">
             <div className="brand-mark">R</div>
+
             <div>
               <h1 style={{ color: "#ffffff" }}>
                 RANA PAYMENT
               </h1>
+
               <p>Loading Payment Link...</p>
             </div>
           </div>
@@ -450,6 +433,7 @@ export default function App() {
             </div>
 
             <h2>Loading...</h2>
+
             <p>
               Payment configuration loading হচ্ছে।
             </p>
@@ -459,16 +443,22 @@ export default function App() {
     );
   }
 
+  /* =========================
+     LINK UNAVAILABLE
+     ========================= */
+
   if (!product) {
     return (
       <main className="payment-page">
         <section className="payment-card">
           <div className="brand">
             <div className="brand-mark">R</div>
+
             <div>
               <h1 style={{ color: "#ffffff" }}>
                 RANA PAYMENT
               </h1>
+
               <p>Payment Link</p>
             </div>
           </div>
@@ -491,17 +481,17 @@ export default function App() {
     );
   }
 
-  /*
-   * IMPORTANT:
-   * QR is generated ONLY from this product's
-   * own UPI ID and amount.
-   */
+  /* =========================
+     UPI LINK
+     ========================= */
+
   const upiLink =
     `upi://pay?pa=${encodeURIComponent(
       product.upiId
     )}` +
     `&pn=${encodeURIComponent(
-      product.merchantName || "RANA PAYMENT"
+      product.merchantName ||
+        "RANA PAYMENT"
     )}` +
     `&am=${Number(product.amount).toFixed(2)}` +
     `&cu=INR`;
@@ -524,6 +514,7 @@ export default function App() {
               <h1 style={{ color: "#ffffff" }}>
                 RANA PAYMENT
               </h1>
+
               <p>Payment Successful</p>
             </div>
           </div>
@@ -579,6 +570,7 @@ export default function App() {
 
           <div className="secure-note">
             <ShieldCheck size={17} />
+
             <span>
               Payment approved by admin.
             </span>
@@ -606,6 +598,7 @@ export default function App() {
               <h1 style={{ color: "#ffffff" }}>
                 RANA PAYMENT
               </h1>
+
               <p>Payment Status</p>
             </div>
           </div>
@@ -655,6 +648,7 @@ export default function App() {
               <h1 style={{ color: "#ffffff" }}>
                 RANA PAYMENT
               </h1>
+
               <p>Payment Status</p>
             </div>
           </div>
@@ -730,6 +724,7 @@ export default function App() {
 
           <div className="secure-note">
             <ShieldCheck size={17} />
+
             <span>
               Please don't close this page.
             </span>
@@ -782,31 +777,43 @@ export default function App() {
 
         <div className="expiry">
           <Clock3 size={16} />
+
           Payment link valid for{" "}
           {product.expiryMinutes || 5} minutes
         </div>
 
-        {/* BLURRED QR */}
+        {/* =========================
+           VISIBLE CLICKABLE QR
+           ========================= */}
 
         <div className="qr-section">
           <button
             type="button"
             onClick={() => setShowFullQr(true)}
-            aria-label="Show full QR code"
+            aria-label="Open QR code"
             style={{
               position: "relative",
               border: "none",
               background: "transparent",
               padding: 0,
               cursor: "pointer",
+              display: "inline-flex",
+              borderRadius: "18px",
+              overflow: "hidden",
+              WebkitTapHighlightColor:
+                "transparent",
             }}
           >
             <div
-              className="qr-wrapper"
               style={{
-                position: "relative",
-                overflow: "hidden",
-                borderRadius: "16px",
+                background: "#ffffff",
+                borderRadius: "18px",
+                padding: "8px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                boxShadow:
+                  "0 18px 55px rgba(0,0,0,0.28)",
               }}
             >
               <QRCodeSVG
@@ -817,72 +824,28 @@ export default function App() {
                 level="H"
                 includeMargin
                 style={{
-                  filter: "blur(5px)",
-                  transform: "scale(1.04)",
+                  display: "block",
+                  width: "220px",
+                  height: "220px",
                 }}
               />
-
-              <div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  background:
-                    "rgba(255,255,255,0.18)",
-                }}
-              >
-                <span
-                  style={{
-                    background: "#111111",
-                    color: "#ffffff",
-                    padding: "10px 18px",
-                    borderRadius: "999px",
-                    fontSize: "14px",
-                    fontWeight: 700,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                  }}
-                >
-                  <Maximize2 size={16} />
-                  QR CODE
-                </span>
-              </div>
             </div>
           </button>
 
           <h3>
             Scan & Pay ₹{product.amount}
           </h3>
-
-          <p>Tap QR CODE to view full QR</p>
-
-          <div
-            className="qr-puppy"
-            role="img"
-            aria-label="Cute payment puppy"
-          >
-            <div className="puppy-glow" />
-            <div className="puppy-emoji" aria-hidden="true">🐶</div>
-            <div className="puppy-speech">
-              <span>Scan me &amp; pay 🐾</span>
-            </div>
-            <div className="puppy-hearts" aria-hidden="true">
-              <span>♥</span>
-              <span>✦</span>
-              <span>♥</span>
-            </div>
-          </div>
         </div>
 
-        {/* FULL QR */}
+        {/* =========================
+           FULL QR MODAL
+           ========================= */}
 
         {showFullQr && (
           <div
             role="dialog"
             aria-modal="true"
+            aria-label="Full QR code"
             onClick={() => setShowFullQr(false)}
             style={{
               position: "fixed",
@@ -892,26 +855,35 @@ export default function App() {
               alignItems: "center",
               justifyContent: "center",
               padding: "20px",
-              background: "rgba(0,0,0,0.82)",
-              backdropFilter: "blur(12px)",
+              background:
+                "rgba(0,0,0,0.84)",
+              backdropFilter:
+                "blur(12px)",
+              WebkitBackdropFilter:
+                "blur(12px)",
             }}
           >
             <div
-              onClick={(e) => e.stopPropagation()}
+              onClick={(event) =>
+                event.stopPropagation()
+              }
               style={{
                 width: "min(92vw, 390px)",
                 borderRadius: "24px",
-                padding: "20px",
+                padding: "22px",
                 background: "#ffffff",
                 boxShadow:
-                  "0 25px 80px rgba(0,0,0,0.5)",
+                  "0 25px 80px rgba(0,0,0,0.55)",
                 textAlign: "center",
                 position: "relative",
               }}
             >
               <button
                 type="button"
-                onClick={() => setShowFullQr(false)}
+                onClick={() =>
+                  setShowFullQr(false)
+                }
+                aria-label="Close QR"
                 style={{
                   position: "absolute",
                   top: "12px",
@@ -926,6 +898,7 @@ export default function App() {
                   alignItems: "center",
                   justifyContent: "center",
                   cursor: "pointer",
+                  zIndex: 2,
                 }}
               >
                 <X size={20} />
@@ -934,20 +907,30 @@ export default function App() {
               <h3
                 style={{
                   color: "#111111",
-                  marginTop: "4px",
+                  margin:
+                    "4px 45px 8px 0",
+                  textAlign: "left",
                 }}
               >
                 QR CODE
               </h3>
 
-              <p style={{ color: "#555555" }}>
+              <p
+                style={{
+                  color: "#555555",
+                  marginTop: 0,
+                }}
+              >
                 Scan & Pay ₹{product.amount}
               </p>
 
               <div
                 style={{
                   display: "flex",
-                  justifyContent: "center",
+                  justifyContent:
+                    "center",
+                  alignItems: "center",
+                  overflow: "auto",
                 }}
               >
                 <QRCodeSVG
@@ -957,6 +940,11 @@ export default function App() {
                   fgColor="#111111"
                   level="H"
                   includeMargin
+                  style={{
+                    display: "block",
+                    maxWidth: "100%",
+                    height: "auto",
+                  }}
                 />
               </div>
 
@@ -964,6 +952,9 @@ export default function App() {
                 style={{
                   color: "#555555",
                   fontSize: "13px",
+                  marginBottom: 0,
+                  wordBreak:
+                    "break-word",
                 }}
               >
                 {product.upiId}
@@ -972,13 +963,23 @@ export default function App() {
           </div>
         )}
 
+        {/* =========================
+           UPI ID
+           ========================= */}
+
         <div className="upi-id-box">
           <div>
             <span>UPI ID</span>
-            <strong>{product.upiId}</strong>
+
+            <strong>
+              {product.upiId}
+            </strong>
           </div>
 
-          <button onClick={copyUpi}>
+          <button
+            type="button"
+            onClick={copyUpi}
+          >
             {copied ? (
               <Check size={18} />
             ) : (
@@ -991,9 +992,10 @@ export default function App() {
 
         <div className="secure-note">
           <Smartphone size={17} />
+
           <span>
-            Your payment is processed securely
-            through UPI.
+            Your payment is processed
+            securely through UPI.
           </span>
         </div>
       </section>
