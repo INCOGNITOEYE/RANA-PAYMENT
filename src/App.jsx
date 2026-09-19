@@ -19,6 +19,7 @@ import {
   Clock3,
   ArrowLeft,
   X,
+  Maximize2,
   Download,
   RefreshCw,
 } from "lucide-react";
@@ -44,18 +45,19 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [status, setStatus] = useState("payment");
   const [showFullQr, setShowFullQr] = useState(false);
-  const [approvedDownloadUrl, setApprovedDownloadUrl] = useState("");
-  const [showDownloadPage, setShowDownloadPage] = useState(true);
 
   const [paymentId, setPaymentId] = useState(
     sessionStorage.getItem("paymentId")
   );
 
   const [adminLoggedIn, setAdminLoggedIn] = useState(false);
-
   const creatingRequest = useRef(false);
 
   const isAdmin = window.location.hash === "#admin";
+
+  /* =========================
+     LOAD PRODUCT FROM GENERATED URL
+     ========================= */
 
   const productId = new URLSearchParams(
     window.location.search
@@ -68,12 +70,23 @@ export default function App() {
       setProductLoading(true);
 
       try {
+        // Authenticate the customer BEFORE reading the product.
+        // This makes generated payment links work in other browsers/devices.
+        if (!auth.currentUser) {
+          await signInAnonymously(auth);
+        }
+
         if (!productId) {
           setProduct(DEFAULT_PAYMENT);
           return;
         }
 
-        const productRef = doc(db, "products", productId);
+        const productRef = doc(
+          db,
+          "products",
+          productId
+        );
+
         const productSnap = await getDoc(productRef);
 
         if (!productSnap.exists()) {
@@ -103,6 +116,10 @@ export default function App() {
     loadProduct();
   }, [productId, isAdmin]);
 
+  /* =========================
+     CREATE / RESTORE PAYMENT
+     ========================= */
+
   useEffect(() => {
     if (isAdmin || !product || !productId) return;
 
@@ -120,6 +137,10 @@ export default function App() {
         const savedProductId =
           sessionStorage.getItem("paymentProductId");
 
+        /*
+         * Only restore the old request if it belongs
+         * to the exact same generated product link.
+         */
         if (
           savedPaymentId &&
           savedProductId === product.id
@@ -150,11 +171,7 @@ export default function App() {
               setPaymentId(savedPaymentId);
 
               if (data.status === "approved") {
-                const downloadUrl = data.downloadUrl || product.downloadUrl || "";
-                setApprovedDownloadUrl(downloadUrl);
                 setStatus("verified");
-                setShowDownloadPage(false);
-                window.setTimeout(() => setShowDownloadPage(true), 1800);
               } else if (data.status === "rejected") {
                 setStatus("rejected");
               } else if (
@@ -177,6 +194,14 @@ export default function App() {
         sessionStorage.removeItem("paymentProductId");
         sessionStorage.removeItem("paymentStarted");
 
+        /*
+         * IMPORTANT:
+         * The payment request stores the exact product
+         * amount + exact UPI ID + exact download URL.
+         *
+         * Therefore each generated link has its own
+         * payment configuration.
+         */
         const docRef = await addDoc(
           collection(db, "payments"),
           {
@@ -185,7 +210,8 @@ export default function App() {
             amount: Number(product.amount),
             upiId: product.upiId,
             merchantName:
-              product.merchantName || "RANA PAYMENT",
+              product.merchantName ||
+              "RANA PAYMENT",
             productName: product.name,
             description: product.description || "",
             downloadUrl: product.downloadUrl || "",
@@ -195,12 +221,19 @@ export default function App() {
           }
         );
 
-        sessionStorage.setItem("paymentId", docRef.id);
+        sessionStorage.setItem(
+          "paymentId",
+          docRef.id
+        );
+
         sessionStorage.setItem(
           "paymentProductId",
           product.id
         );
-        sessionStorage.removeItem("paymentStarted");
+
+        sessionStorage.removeItem(
+          "paymentStarted"
+        );
 
         setPaymentId(docRef.id);
         setStatus("payment");
@@ -218,105 +251,75 @@ export default function App() {
     createOrRestoreRequest();
   }, [product, productId, isAdmin]);
 
+  /* =========================
+     LIVE PAYMENT STATUS
+     ========================= */
+
   useEffect(() => {
     if (!paymentId || isAdmin) return;
 
-    const paymentRef = doc(db, "payments", paymentId);
-    let stopped = false;
+    const paymentRef = doc(
+      db,
+      "payments",
+      paymentId
+    );
 
-    const applyPaymentStatus = (data) => {
-      if (!data) return;
-
-      if (data.status === "approved") {
-        setApprovedDownloadUrl(
-          data.downloadUrl || product?.downloadUrl || ""
-        );
-        setStatus("verified");
-        setShowDownloadPage(true);
-
-        return;
-      }
-
-      if (data.status === "rejected") {
-        setStatus("rejected");
-        return;
-      }
-
-      if (data.status === "pending") {
-        setStatus(
-          sessionStorage.getItem("paymentStarted") === "true"
-            ? "pending"
-            : "payment"
-        );
-      }
-    };
-
-    const checkPayment = async () => {
-      try {
-        const snapshot = await getDoc(paymentRef);
-
-        if (!snapshot.exists()) {
-          return;
-        }
-
-        applyPaymentStatus(snapshot.data());
-      } catch (error) {
-        console.error("Payment polling error:", error);
-      }
-    };
-
-    // Immediate check.
-    checkPayment();
-
-    // Realtime listener.
     const unsubscribe = onSnapshot(
       paymentRef,
       (snapshot) => {
-        if (!snapshot.exists()) return;
-        applyPaymentStatus(snapshot.data());
+        if (!snapshot.exists()) {
+          sessionStorage.removeItem("paymentId");
+          sessionStorage.removeItem("paymentProductId");
+          sessionStorage.removeItem("paymentStarted");
+
+          setPaymentId(null);
+          setStatus("payment");
+          return;
+        }
+
+        const data = snapshot.data();
+
+        /*
+         * Use the values saved in the payment request.
+         * This prevents another product's amount/UPI/URL
+         * from being used accidentally.
+         */
+        if (data.status === "approved") {
+          setStatus("verified");
+        } else if (data.status === "rejected") {
+          setStatus("rejected");
+        } else if (data.status === "pending") {
+          if (
+            sessionStorage.getItem(
+              "paymentStarted"
+            ) === "true"
+          ) {
+            setStatus("pending");
+          } else {
+            setStatus("payment");
+          }
+        }
       },
       (error) => {
-        console.error("Payment realtime error:", error);
+        console.error(
+          "Payment status error:",
+          error
+        );
       }
     );
 
-    // Fallback for local/mobile browsers where realtime delivery
-    // can be delayed until a refresh or visibility change.
-    const poll = window.setInterval(
-      checkPayment,
-      1000
-    );
+    return () => unsubscribe();
+  }, [paymentId, isAdmin]);
 
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") {
-        checkPayment();
-      }
-    };
-
-    document.addEventListener(
-      "visibilitychange",
-      handleVisibility
-    );
-
-    return () => {
-      stopped = true;
-
-      window.clearInterval(poll);
-      document.removeEventListener(
-        "visibilitychange",
-        handleVisibility
-      );
-      unsubscribe();
-    };
-  }, [paymentId, isAdmin, product]);
+  /* =========================
+     VISIBILITY
+     ========================= */
 
   useEffect(() => {
     if (isAdmin) return;
 
     const handleVisibility = () => {
-      if (document.visibilityState !== "visible") {
-        return;
-      }
+      if (document.visibilityState !== "visible") return;
 
       const savedPaymentId =
         sessionStorage.getItem("paymentId");
@@ -353,6 +356,10 @@ export default function App() {
       );
   }, [isAdmin, productId]);
 
+  /* =========================
+     COPY UPI
+     ========================= */
+
   const copyUpi = async () => {
     if (!product?.upiId) return;
 
@@ -370,6 +377,10 @@ export default function App() {
       alert("UPI ID copy করা যায়নি");
     }
   };
+
+  /* =========================
+     OPEN UPI
+     ========================= */
 
   const openUpi = () => {
     if (!paymentId || !product) {
@@ -389,10 +400,21 @@ export default function App() {
     window.location.href = upiLink;
   };
 
+  /* =========================
+     BACK
+     ========================= */
+
   const backToPayment = () => {
-    sessionStorage.removeItem("paymentStarted");
+    sessionStorage.removeItem(
+      "paymentStarted"
+    );
+
     setStatus("payment");
   };
+
+  /* =========================
+     ADMIN
+     ========================= */
 
   if (isAdmin && !adminLoggedIn) {
     return (
@@ -412,12 +434,10 @@ export default function App() {
         <section className="payment-card">
           <div className="brand">
             <div className="brand-mark">R</div>
-
             <div>
               <h1 style={{ color: "#ffffff" }}>
                 RANA PAYMENT
               </h1>
-
               <p>Loading Payment Link...</p>
             </div>
           </div>
@@ -430,7 +450,6 @@ export default function App() {
             </div>
 
             <h2>Loading...</h2>
-
             <p>
               Payment configuration loading হচ্ছে।
             </p>
@@ -446,12 +465,10 @@ export default function App() {
         <section className="payment-card">
           <div className="brand">
             <div className="brand-mark">R</div>
-
             <div>
               <h1 style={{ color: "#ffffff" }}>
                 RANA PAYMENT
               </h1>
-
               <p>Payment Link</p>
             </div>
           </div>
@@ -474,6 +491,11 @@ export default function App() {
     );
   }
 
+  /*
+   * IMPORTANT:
+   * QR is generated ONLY from this product's
+   * own UPI ID and amount.
+   */
   const upiLink =
     `upi://pay?pa=${encodeURIComponent(
       product.upiId
@@ -484,7 +506,11 @@ export default function App() {
     `&am=${Number(product.amount).toFixed(2)}` +
     `&cu=INR`;
 
-  if (status === "verified" && !showDownloadPage) {
+  /* =========================
+     VERIFIED
+     ========================= */
+
+  if (status === "verified") {
     return (
       <main className="payment-page">
         <div className="background-glow glow-one" />
@@ -512,7 +538,8 @@ export default function App() {
             <h2>Payment Successful ✓</h2>
 
             <p>
-              Your payment has been verified successfully.
+              Your payment has been
+              verified successfully.
             </p>
 
             <div className="processing-dots">
@@ -522,168 +549,48 @@ export default function App() {
             </div>
           </div>
 
-          <div className="secure-note">
-            <ShieldCheck size={17} />
-            <span>Preparing your premium download...</span>
-          </div>
-        </section>
-      </main>
-    );
-  }
-
-  if (status === "verified" && showDownloadPage) {
-    const finalDownloadUrl =
-      approvedDownloadUrl || product.downloadUrl || "";
-
-    return (
-      <main className="payment-page">
-        <div className="background-glow glow-one" />
-        <div className="background-glow glow-two" />
-
-        <section className="payment-card">
-          <div className="brand">
-            <div className="brand-mark">R</div>
-
-            <div>
-              <h1 style={{ color: "#ffffff" }}>
-                RANA PAYMENT
-              </h1>
-              <p>Premium Download</p>
-            </div>
-          </div>
-
-          <div className="product-box">
-            <div>
-              <span className="eyebrow">PAYMENT VERIFIED</span>
-
-              <h2 style={{ color: "#ffffff" }}>
-                {product.name || "Premium File"}
-              </h2>
-
-              <p>
-                {product.description ||
-                  "Your payment has been verified. Your premium file is ready."}
-              </p>
-            </div>
-
-            <div className="amount">
-              <Check size={24} />
-            </div>
-          </div>
-
-          <div
-            style={{
-              marginTop: "22px",
-              padding: "22px",
-              borderRadius: "20px",
-              background: "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(255,255,255,0.09)",
-              textAlign: "center",
-            }}
-          >
-            <div
+          {product.downloadUrl ? (
+            <a
+              className="paid-button"
+              href={product.downloadUrl}
+              target="_blank"
+              rel="noopener noreferrer"
               style={{
-                width: "78px",
-                height: "78px",
-                margin: "0 auto 14px",
-                borderRadius: "20px",
-                display: "flex",
-                alignItems: "center",
+                textDecoration: "none",
                 justifyContent: "center",
-                background: "rgba(255,255,255,0.08)",
               }}
             >
-              <Download size={34} />
-            </div>
-
-            <h3 style={{ color: "#ffffff", margin: "0 0 8px" }}>
-              Download Ready
-            </h3>
-
-            <p style={{ margin: 0 }}>
-              Payment verified successfully. Tap below to
-              download your premium file.
-            </p>
-          </div>
-
-          {finalDownloadUrl ? (
-            <div
-              style={{
-                marginTop: "16px",
-                padding: "16px",
-                borderRadius: "18px",
-                background: "rgba(255,255,255,0.04)",
-                border: "1px solid rgba(255,255,255,0.10)",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "11px",
-                  fontWeight: 800,
-                  letterSpacing: "1.5px",
-                  opacity: 0.55,
-                  marginBottom: "8px",
-                }}
-              >
-                DOWNLOAD
-              </div>
-
-              <div
-                style={{
-                  padding: "12px 13px",
-                  borderRadius: "12px",
-                  background: "rgba(0,0,0,0.20)",
-                  border: "1px solid rgba(255,255,255,0.07)",
-                  fontSize: "12px",
-                  lineHeight: 1.5,
-                  wordBreak: "break-all",
-                  opacity: 0.75,
-                }}
-              >
-                {finalDownloadUrl}
-              </div>
-
-              <a
-                className="paid-button"
-                href={finalDownloadUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  textDecoration: "none",
-                  justifyContent: "center",
-                  marginTop: "12px",
-                  width: "100%",
-                  boxSizing: "border-box",
-                }}
-              >
-                <Download size={19} />
-                Open Download
-              </a>
-            </div>
+              <Download size={19} />
+              Download Premium File
+            </a>
           ) : (
-            <div
-              className="secure-note"
-              style={{
-                marginTop: "16px",
-                color: "#ffb4b4",
-              }}
+            <button
+              className="paid-button"
+              onClick={() =>
+                alert(
+                  "Admin এখনও এই product-এর Download URL set করেননি।"
+                )
+              }
             >
-              <X size={17} />
-              <span>
-                এই product-এর Download URL পাওয়া যায়নি। Admin Panel-এ
-                Download URL আবার সেট করো।
-              </span>
-            </div>
+              <Download size={19} />
+              Download Premium File
+            </button>
           )}
 
           <div className="secure-note">
             <ShieldCheck size={17} />
-            <span>Payment approved by admin.</span>
+            <span>
+              Payment approved by admin.
+            </span>
           </div>
         </section>
       </main>
     );
   }
+
+  /* =========================
+     REJECTED
+     ========================= */
 
   if (status === "rejected") {
     return (
@@ -699,7 +606,6 @@ export default function App() {
               <h1 style={{ color: "#ffffff" }}>
                 RANA PAYMENT
               </h1>
-
               <p>Payment Status</p>
             </div>
           </div>
@@ -714,7 +620,8 @@ export default function App() {
             <h2>Payment Rejected</h2>
 
             <p>
-              Your payment could not be verified.
+              Your payment could not
+              be verified.
             </p>
           </div>
 
@@ -730,6 +637,10 @@ export default function App() {
     );
   }
 
+  /* =========================
+     PENDING
+     ========================= */
+
   if (status === "pending") {
     return (
       <main className="payment-page">
@@ -744,7 +655,6 @@ export default function App() {
               <h1 style={{ color: "#ffffff" }}>
                 RANA PAYMENT
               </h1>
-
               <p>Payment Status</p>
             </div>
           </div>
@@ -771,8 +681,9 @@ export default function App() {
               </p>
 
               <p>
-                Your payment request has been submitted.
-                Please wait for admin approval.
+                Your payment request has
+                been submitted. Please wait
+                for admin approval.
               </p>
             </div>
 
@@ -797,8 +708,9 @@ export default function App() {
             <h3>Payment Submitted</h3>
 
             <p>
-              After verification, your premium download
-              will become available.
+              After verification, your
+              premium download will become
+              available.
             </p>
 
             <div className="processing-dots">
@@ -818,7 +730,6 @@ export default function App() {
 
           <div className="secure-note">
             <ShieldCheck size={17} />
-
             <span>
               Please don't close this page.
             </span>
@@ -827,6 +738,10 @@ export default function App() {
       </main>
     );
   }
+
+  /* =========================
+     PAYMENT PAGE
+     ========================= */
 
   return (
     <main className="payment-page">
@@ -854,7 +769,9 @@ export default function App() {
 
             <h2>{product.name}</h2>
 
-            <p>{product.description}</p>
+            <p>
+              {product.description}
+            </p>
           </div>
 
           <div className="amount">
@@ -869,10 +786,13 @@ export default function App() {
           {product.expiryMinutes || 5} minutes
         </div>
 
+        {/* BLURRED QR */}
+
         <div className="qr-section">
           <button
             type="button"
             onClick={() => setShowFullQr(true)}
+            aria-label="Show full QR code"
             style={{
               position: "relative",
               border: "none",
@@ -882,31 +802,54 @@ export default function App() {
             }}
           >
             <div
+              className="qr-wrapper"
               style={{
                 position: "relative",
-                width: "min(180px, 52vw)",
-                height: "min(180px, 52vw)",
                 overflow: "hidden",
                 borderRadius: "16px",
-                background: "#ffffff",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
               }}
             >
               <QRCodeSVG
                 value={upiLink}
-                size={170}
+                size={220}
                 bgColor="#ffffff"
                 fgColor="#111111"
                 level="H"
                 includeMargin
                 style={{
-                  display: "block",
-                  width: "100%",
-                  height: "100%",
+                  filter: "blur(5px)",
+                  transform: "scale(1.04)",
                 }}
               />
+
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background:
+                    "rgba(255,255,255,0.18)",
+                }}
+              >
+                <span
+                  style={{
+                    background: "#111111",
+                    color: "#ffffff",
+                    padding: "10px 18px",
+                    borderRadius: "999px",
+                    fontSize: "14px",
+                    fontWeight: 700,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                  }}
+                >
+                  <Maximize2 size={16} />
+                  QR CODE
+                </span>
+              </div>
             </div>
           </button>
 
@@ -914,8 +857,27 @@ export default function App() {
             Scan & Pay ₹{product.amount}
           </h3>
 
-          <p>Tap the QR to open it larger</p>
+          <p>Tap QR CODE to view full QR</p>
+
+          <div
+            className="qr-puppy"
+            role="img"
+            aria-label="Cute payment puppy"
+          >
+            <div className="puppy-glow" />
+            <div className="puppy-emoji" aria-hidden="true">🐶</div>
+            <div className="puppy-speech">
+              <span>Scan me &amp; pay 🐾</span>
+            </div>
+            <div className="puppy-hearts" aria-hidden="true">
+              <span>♥</span>
+              <span>✦</span>
+              <span>♥</span>
+            </div>
+          </div>
         </div>
+
+        {/* FULL QR */}
 
         {showFullQr && (
           <div
@@ -1010,28 +972,9 @@ export default function App() {
           </div>
         )}
 
-
-        <div
-          className="qr-puppy"
-          role="img"
-          aria-label="Cute payment puppy"
-        >
-          <div className="puppy-glow" />
-          <div className="puppy-emoji" aria-hidden="true">🐶</div>
-          <div className="puppy-speech">
-            <span>Scan me &amp; pay 🐾</span>
-          </div>
-          <div className="puppy-hearts" aria-hidden="true">
-            <span>♥</span>
-            <span>✦</span>
-            <span>♥</span>
-          </div>
-        </div>
-
         <div className="upi-id-box">
           <div>
             <span>UPI ID</span>
-
             <strong>{product.upiId}</strong>
           </div>
 
@@ -1048,9 +991,9 @@ export default function App() {
 
         <div className="secure-note">
           <Smartphone size={17} />
-
           <span>
-            Your payment is processed securely through UPI.
+            Your payment is processed securely
+            through UPI.
           </span>
         </div>
       </section>
